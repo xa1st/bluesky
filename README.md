@@ -4,7 +4,7 @@ skyblue
 
 > 有关该项目的说明详见 https://del.pub/skyblue
 
-![预览图](https://cdn.jsdelivr.net/gh/mopo/skyblue@master/preview.png)
+![预览图](https://raw.githubusercontent.com/mopo/bluesky/master/preview.png)
 
 ## 1. 接口来源
 
