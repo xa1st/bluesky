@@ -15,7 +15,7 @@ skyblue
 ```bash
 git clone git@github.com:mopo/skyblue.git
 cd skyblue
-vim congfig/mail.go   // 打开邮件配置填好邮件smtp
+vim config.ini   // 打开邮件配置填好邮件smtp
 go mod tidy
 go run main.go
 ```

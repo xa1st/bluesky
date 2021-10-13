@@ -115,10 +115,11 @@ func DownUrl(postdata string, methods string) ([]byte, error) {
 // 发邮件给我
 func SendToMail(to, subject, body string) {
 	hp := strings.Split(mapMail["host"], ":")
-	auth := smtp.PlainAuth("", mapMail["user"], mapMail["password"], hp[0])
+	auth := smtp.PlainAuth("", mapMail["user"], mapMail["pwd"], hp[0])
 	mail := email.NewEmail()
 	mail.From = "物业小助手 <" + mapMail["user"] + ">"
-	mail.To = []string{mapMail["user"]}
+	mail.To = []string{mapMail["user"]} // 收件人
+	// mail.Cc = []string{"test_cc@example.com"} // 抄送
 	mail.Subject = subject
 	mail.Text = []byte(body)
 	err := mail.SendWithTLS(mapMail["host"], auth, &tls.Config{ServerName: hp[0]})
@@ -139,16 +140,17 @@ func GetNoticeList() []int64 {
 		HandleError(err, "远程信息格式不正确")
 	}
 	datalists := json.Get("body").Get("list").MustArray()
-	now := time.Now()
+	now := time.Now().Unix()
 	for _, list := range datalists {
 		if item, ok := list.(map[string]interface{}); ok {
 			// 因为此处判定是1小时运行1次，所以只提取当前1小时内的消息,断言
-			pTime, err := time.Parse("2006-01-02 15:04:05", item["addtime"].(string))
+			pTime, err := time.ParseInLocation("2006-01-02 15:04:05", item["addtime"].(string), time.Local)
 			if err != nil {
 				continue
 			}
-			duration := now.Sub(pTime)
-			if duration > time.Duration(DURITION*int(time.Second)) {
+			// 如果大于设置的间隔时间，则直接跳过
+			duration := int(now - pTime.Unix())
+			if duration > DURITION {
 				continue
 			}
 			itemid, _ := item["id"].(json1.Number).Int64()
