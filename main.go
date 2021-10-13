@@ -15,27 +15,35 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bitly/go-simplejson"
+	json1 "encoding/json"
+
+	simplejson "github.com/bitly/go-simplejson"
 	"github.com/jordan-wright/email"
-	"github.com/kufei/skyblue/config"
+	"gopkg.in/ini.v1"
 )
 
 const (
 	// 常量定义
-	apiUrls    string = "https://jkssl.linlehui001.com/pmcs/masterController/ctrl.json" // API接口地址
-	lastIdFile string = "./lastid.txt"
-	detailUrl  string = "http://182.92.161.166:8090/pmcs/htmController/ctrl.htm?action=noticedetailHTML&cellId=7235161&id="
+	APIURL string = "https://jkssl.linlehui001.com/pmcs/masterController/ctrl.json" // API接口地址
+	// 小区ID
+	AREAID string = "7235161"
+	// 获取消息间隔，单位为：秒
+	DURITION int = 3600
 )
 
 var (
 	// 协程管理
 	wg sync.WaitGroup
 
+	// 详情页请求地址
+	detailUrl string = "http://182.92.161.166:8090/pmcs/htmController/ctrl.htm"
+
 	// 邮件信息
-	mapMail = map[string]string{"host": config.MailHost, "user": config.MailUser, "password": config.MailPassword}
+	mapMail = map[string]string{"host": "", "user": "", "pwd": ""}
 
 	// 存放所有的公告的管道
 	chanNoticeUrls chan string
+
 	// 用于监控协程
 	chanTask chan string
 
@@ -50,7 +58,6 @@ var (
 func HandleError(err error, msg string) {
 	if err != nil {
 		log.Fatal(err)
-		fmt.Println(msg, err)
 	}
 }
 
@@ -63,8 +70,8 @@ func PostData(action string) string {
 	err = json.UnmarshalJSON([]byte(`{
 		"head": {"action": "` + action + `", "resultCode": "0", "errorMsg": "OK!"},
 		"body": {
-			"data" : {"cellid":"7235161", "pagenum":"1", "minid":"", "versionFlag":"1"},
-			"datastatic": {"appVersion":"android-1.2.6", "cellId":"7235161", "fromType":"0", "imei":"010045025970362", "ip":"10.1.2.46", "sysVersion":"android5.1.1", "tel":"", "type":"0", "userId":"", "versionInfo":"skyblue"}
+			"data" : {"cellid":"` + AREAID + `", "pagenum":"1", "minid":"", "versionFlag":"1"},
+			"datastatic": {"appVersion":"android-1.2.6", "cellId":"` + AREAID + `", "fromType":"0", "imei":"010045025970362", "ip":"10.1.2.46", "sysVersion":"android5.1.1", "tel":"", "type":"0", "userId":"", "versionInfo":"skyblue"}
 		}
 	}`))
 	if err != nil {
@@ -80,9 +87,9 @@ func PostData(action string) string {
 // 获取指定页面内容
 func DownUrl(postdata string, methods string) ([]byte, error) {
 	client := &http.Client{}
-	request, err := http.NewRequest("POST", apiUrls, strings.NewReader(postdata))
+	request, err := http.NewRequest("POST", APIURL, strings.NewReader(postdata))
 	if methods == "GET" {
-		request, err = http.NewRequest("GET", detailUrl+postdata, nil)
+		request, err = http.NewRequest("GET", detailUrl+"?"+postdata, nil)
 	}
 	if err != nil {
 		HandleError(err, "访问错误")
@@ -116,38 +123,12 @@ func SendToMail(to, subject, body string) {
 	mail.Text = []byte(body)
 	err := mail.SendWithTLS(mapMail["host"], auth, &tls.Config{ServerName: hp[0]})
 	if err != nil {
-		HandleError(err, "邮件发送失败")
+		fmt.Println("邮件发送失败:", err)
 	}
-}
-
-// 读取本地文件中存储的最后一次的id
-func ReadLastId() int64 {
-	fileInfo, err := os.Stat(lastIdFile)
-	if os.IsNotExist(err) || fileInfo.Size() == 0 {
-		return 0
-	}
-	info, err := ioutil.ReadFile(lastIdFile)
-	if err != nil {
-		return 0
-	}
-	id, err := strconv.ParseInt(string(info), 10, 64)
-	if err != nil {
-		return 0
-	}
-	return id
-}
-
-func WriteLastId(string []byte) (ok bool) {
-	err := ioutil.WriteFile(lastIdFile, string, 0666)
-	if err != nil {
-		HandleError(err, "最后一次ID存储失败")
-		return false
-	}
-	return true
 }
 
 // 获取公告列表
-func GetNoticeList(id int64) []int64 {
+func GetNoticeList() []int64 {
 	var arrayNotice = make([]int64, 0)
 	body, err := DownUrl(PostData("notice"), "POST")
 	if err != nil {
@@ -158,17 +139,20 @@ func GetNoticeList(id int64) []int64 {
 		HandleError(err, "远程信息格式不正确")
 	}
 	datalists := json.Get("body").Get("list").MustArray()
+	now := time.Now()
 	for _, list := range datalists {
 		if item, ok := list.(map[string]interface{}); ok {
-			// 此处原应该用 .(json.Number)断言，然而却报错...暂时这么用
-			itemId, err := strconv.ParseInt(fmt.Sprintf("%s", item["id"]), 10, 64)
+			// 因为此处判定是1小时运行1次，所以只提取当前1小时内的消息,断言
+			pTime, err := time.Parse("2006-01-02 15:04:05", item["addtime"].(string))
 			if err != nil {
-				HandleError(err, "返回值ID转换错误!")
-			}
-			if itemId <= id {
 				continue
 			}
-			arrayNotice = append(arrayNotice, itemId)
+			duration := now.Sub(pTime)
+			if duration > time.Duration(DURITION*int(time.Second)) {
+				continue
+			}
+			itemid, _ := item["id"].(json1.Number).Int64()
+			arrayNotice = append(arrayNotice, itemid)
 		}
 	}
 	return arrayNotice
@@ -176,13 +160,17 @@ func GetNoticeList(id int64) []int64 {
 
 // 爬公告内容页
 func getNoticeDetail(id string) {
-	body, err := DownUrl(id, "GET")
+	url := fmt.Sprintf("action=noticedetailHTML&cellId=%s&id=%s", AREAID, id)
+	body, err := DownUrl(url, "GET")
 	if err != nil {
 		HandleError(err, "获取公告内容失败")
 	}
 	noticeMap := GetNoticeInfo(string(body))
 	// 这里发邮件
 	noticeMap["mailto"] = mapMail["user"]
+	// 记录一下ID
+	noticeMap["id"] = id
+	// 写入邮件队列
 	queueMail.PushBack(noticeMap)
 	chanTask <- id + "." + noticeMap["title"] + "[" + noticeMap["time"] + "]"
 	wg.Done()
@@ -218,6 +206,24 @@ func FilterHtml(body string) string {
 	return body
 }
 
+// 测试邮箱配置
+func checkMailConf() {
+	var cfg *ini.File
+	cfg, err := ini.Load("./config.ini")
+	if err != nil {
+		HandleError(err, "发生错误")
+	}
+	mapMail = map[string]string{
+		"host": cfg.Section("smtp").Key("host").String(),
+		"user": cfg.Section("smtp").Key("user").String(),
+		"pwd":  cfg.Section("smtp").Key("pwd").String(),
+	}
+	if mapMail["host"] == "" || mapMail["user"] == "" || mapMail["pwd"] == "" {
+		err := fmt.Errorf("邮箱SMTP配置错误，请检查后再继续")
+		HandleError(err, "发生错误")
+	}
+}
+
 // 任务统计协程
 func checkOK(threadNum int) {
 	var count int
@@ -234,10 +240,10 @@ func checkOK(threadNum int) {
 }
 
 func main() {
-	// 上次获取的通知的ID
-	lastId := ReadLastId()
+	// 第一步就开始判定是否存在邮件配置，如果邮件发送失败，就没有抓取的必要了
+	checkMailConf()
 	// 获取公告的ID集合
-	noticeList := GetNoticeList(lastId)
+	noticeList := GetNoticeList()
 	if len(noticeList) < 1 {
 		fmt.Println("当前没有更新的公告内容")
 		os.Exit(0)
@@ -256,19 +262,19 @@ func main() {
 	checkOK(len(noticeList))
 	// 5. 更新最后的
 	wg.Wait()
-	// 6. 最后更新lastid
-	WriteLastId([]byte(strconv.FormatInt(noticeList[0], 10)))
 	// 7. 慢慢的发邮件
-	i := 1
+	i := 0
+	defer fmt.Printf("共有%d条新邮件，已经全部发送完成\n", queueMail.Len())
 	for p := queueMail.Front(); p != nil; p = p.Next() {
 		i++
-		fmt.Printf("共有%d条新邮件，正在发送第%d封...\n", queueMail.Len(), i)
+		fmt.Printf("共有%d条新邮件，正在发送第%d封...", queueMail.Len(), i)
 		mail := p.Value.(map[string]string)
-		SendToMail(mail["mailto"], mail["title"]+"["+mail["time"]+"]", mail["content"])
-		if i < queueMail.Len() {
-			time.Sleep(time.Second * 10) // 每10秒发一次邮件
-		} else {
-			fmt.Printf("共有%d条新邮件，已经全部发送完成\n", queueMail.Len())
+		// 标题为空则无法发送
+		if mail["title"] == "" {
+			fmt.Printf("发送失败,id:%s,抓取内容为空...\n", mail["id"])
+			continue
 		}
+		SendToMail(mail["mailto"], mail["title"]+"["+mail["time"]+"]", mail["content"])
+		time.Sleep(time.Second * 10) // 每10秒发一次邮件，防止达到运营商限制
 	}
 }
